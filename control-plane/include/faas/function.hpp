@@ -26,6 +26,7 @@ struct FunctionSpec {
     int memory_mb = 256;
     double cpu = 0.5;
     int max_concurrency = 1;
+    long idle_timeout_ms = 60000; // how long a runtime may sit IDLE before scale-to-zero reaps it
 };
 
 // A registered function as tracked by the control plane.

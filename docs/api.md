@@ -18,6 +18,7 @@ The control plane exposes a plain HTTP/JSON API on port 8080 by default
 | DELETE | `/functions/{name}`         | done    | Remove a function                     |
 | POST   | `/functions/{name}/invoke`  | done    | Invoke a function                     |
 | GET    | `/functions/{name}/runtime` | done    | Inspect the current runtime, if any   |
+| GET    | `/runtimes`                 | done    | List all currently active runtimes    |
 | GET    | `/invocations/{id}`         | stub    | Fetch a past invocation record        |
 | GET    | `/metrics`                  | planned | Prometheus text-format metrics        |
 
@@ -36,12 +37,16 @@ Request body:
   "timeout_ms": 5000,
   "memory_mb": 256,
   "cpu": 0.5,
-  "max_concurrency": 1
+  "max_concurrency": 1,
+  "idle_timeout_ms": 60000
 }
 ```
 
 Only `name` and `image` are required; the rest default to the values
-shown above.
+shown above. `idle_timeout_ms`'s default can be changed platform-wide
+with the `FAAS_IDLE_TIMEOUT_MS` environment variable, without redeploying
+every function; a value in the request body always overrides it for that
+one function.
 
 Response: `201 Created` with the stored function record, or `400 Bad
 Request` if `name`/`image` are missing or the body is not valid JSON.
@@ -59,6 +64,7 @@ Response: `200 OK` with the function record, or `404 Not Found`.
   "memory_mb": 256,
   "cpu": 0.5,
   "max_concurrency": 1,
+  "idle_timeout_ms": 60000,
   "status": "READY"
 }
 ```
@@ -150,6 +156,30 @@ around in either state.
 Response on `404 Not Found` if the function is not registered, or if no
 runtime is currently running for it (never invoked yet, or scaled to
 zero after being idle).
+
+## GET /runtimes
+
+Lists every currently active runtime across all functions - a
+platform-wide view of scale-to-zero: a busy platform has many entries,
+an idle one has few or none. Useful for watching the total active count
+change over time (see `benchmarks/`).
+
+Response on `200 OK`:
+
+```json
+[
+  {
+    "function": "hello",
+    "state": "IDLE",
+    "container_id": "2d629e7ca249...",
+    "host_port": 32772,
+    "idle_ms": 1832
+  }
+]
+```
+
+An empty array means no runtimes are currently active anywhere on the
+platform.
 
 ## GET /invocations/{id}
 

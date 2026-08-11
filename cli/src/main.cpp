@@ -38,7 +38,7 @@ Args parse_args(int argc, char** argv, int start) {
     return args;
 }
 
-// Parses durations like "5s" or "500ms" into milliseconds.
+// Parses durations like "5s", "500ms", or "2m" into milliseconds.
 int parse_duration_ms(const std::string& value, int fallback) {
     if (value.empty()) return fallback;
     if (value.size() > 2 && value.substr(value.size() - 2) == "ms") {
@@ -46,6 +46,9 @@ int parse_duration_ms(const std::string& value, int fallback) {
     }
     if (value.back() == 's') {
         return std::stoi(value.substr(0, value.size() - 1)) * 1000;
+    }
+    if (value.back() == 'm') {
+        return std::stoi(value.substr(0, value.size() - 1)) * 60000;
     }
     return std::stoi(value);
 }
@@ -88,7 +91,8 @@ void print_api_error(const faas_http::ClientResponse& resp) {
 int cmd_deploy(const Args& args) {
     if (args.positional.empty()) {
         std::cerr << "usage: cloudfn deploy <name> --image <image> "
-                     "[--timeout 5s] [--memory 256Mi] [--cpu 0.5] [--concurrency 1]\n";
+                     "[--timeout 5s] [--memory 256Mi] [--cpu 0.5] [--concurrency 1] "
+                     "[--idle-timeout 60s]\n";
         return 1;
     }
     if (!args.flags.count("image") || args.flags.at("image").empty()) {
@@ -103,6 +107,9 @@ int cmd_deploy(const Args& args) {
     if (args.flags.count("memory")) body["memory_mb"] = parse_memory_mb(args.flags.at("memory"), 256);
     if (args.flags.count("cpu")) body["cpu"] = std::stod(args.flags.at("cpu"));
     if (args.flags.count("concurrency")) body["max_concurrency"] = std::stoi(args.flags.at("concurrency"));
+    if (args.flags.count("idle-timeout")) {
+        body["idle_timeout_ms"] = parse_duration_ms(args.flags.at("idle-timeout"), 60000);
+    }
 
     auto resp = make_client().post("/functions", body.dump());
     if (!resp.ok || resp.status >= 300) {
@@ -131,6 +138,7 @@ int cmd_describe(const Args& args) {
     std::cout << "Memory:      " << fn.value("memory_mb", 0) << "Mi\n";
     std::cout << "CPU:         " << fn.value("cpu", 0.0) << "\n";
     std::cout << "Concurrency: " << fn.value("max_concurrency", 1) << "\n";
+    std::cout << "Idle timeout: " << fn.value("idle_timeout_ms", 0) << "ms\n";
     std::cout << "Status:      " << fn.value("status", "") << "\n";
     return 0;
 }
@@ -181,6 +189,28 @@ int cmd_logs(const Args& args) {
     return 0;
 }
 
+int cmd_runtimes(const Args&) {
+    auto resp = make_client().get("/runtimes");
+    if (!resp.ok || resp.status >= 300) {
+        print_api_error(resp);
+        return 1;
+    }
+
+    json entries = json::parse(resp.body);
+    if (entries.empty()) {
+        std::cout << "no active runtimes\n";
+        return 0;
+    }
+
+    for (const auto& entry : entries) {
+        std::cout << entry.value("function", "") << "\t"
+                   << entry.value("state", "") << "\t"
+                   << "port=" << entry.value("host_port", 0) << "\t"
+                   << "idle_ms=" << entry.value("idle_ms", 0L) << "\n";
+    }
+    return 0;
+}
+
 int cmd_delete(const Args& args) {
     if (args.positional.empty()) {
         std::cerr << "usage: cloudfn delete <name>\n";
@@ -199,7 +229,7 @@ int cmd_delete(const Args& args) {
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::cerr << "usage: cloudfn <deploy|describe|invoke|logs|delete> ...\n";
+        std::cerr << "usage: cloudfn <deploy|describe|invoke|logs|delete|runtimes> ...\n";
         return 1;
     }
 
@@ -211,6 +241,7 @@ int main(int argc, char** argv) {
     if (command == "invoke") return cmd_invoke(args);
     if (command == "logs") return cmd_logs(args);
     if (command == "delete") return cmd_delete(args);
+    if (command == "runtimes") return cmd_runtimes(args);
 
     std::cerr << "unknown command: " << command << "\n";
     return 1;

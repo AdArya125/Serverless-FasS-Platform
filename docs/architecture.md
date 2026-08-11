@@ -117,14 +117,21 @@ runtime is stopped and removed - a runtime that may still be stuck
 running something is not a safe thing to hand to the next invocation.
 
 Separately, a background thread in the runtime manager wakes up every
-500ms and stops any runtime that has been `IDLE` for longer than the
-idle timeout (`FAAS_IDLE_TIMEOUT_MS`, default 60000ms). This is the
-scale-to-zero mechanism: a function with no traffic naturally drops to
-zero running containers, and the next invocation recreates one on
-demand exactly like a first-ever cold start. `GET
-/functions/{name}/runtime` is a direct window into this - invoke a
-function, watch it go `IDLE`, then watch it disappear once the idle
-timeout elapses.
+500ms and stops any runtime that has been `IDLE` for longer than *its
+function's own* idle timeout - each function carries its own
+`idle_timeout_ms` (set at deploy time, defaulting to
+`FAAS_IDLE_TIMEOUT_MS`, itself defaulting to 60000ms), copied onto the
+runtime when it is created, so two functions can scale down on
+completely different schedules without affecting each other. This is
+the scale-to-zero mechanism: a function with no traffic naturally drops
+to zero running containers, and the next invocation recreates one on
+demand exactly like a first-ever cold start.
+
+`GET /functions/{name}/runtime` is a direct window into this for one
+function - invoke it, watch it go `IDLE`, then watch it disappear once
+its idle timeout elapses. `GET /runtimes` gives the same view across
+every function at once, which is what a benchmark script would poll to
+plot active-runtime count over time (see `benchmarks/`).
 
 ## Docker now, Kubernetes later
 

@@ -11,6 +11,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace faas {
 
@@ -35,14 +36,22 @@ struct RuntimeStatus {
     long idle_ms;
 };
 
+struct RuntimeListEntry {
+    std::string function_name;
+    RuntimeState state;
+    std::string container_id;
+    int host_port;
+    long idle_ms;
+};
+
 // Owns the mapping from function name to the single running container
 // (if any) that serves it: creating one on demand, reusing a warm one
 // without a proactive health check on every call, enforcing the
 // function's invocation timeout, retiring runtimes that time out or
-// turn out to be dead, and reaping ones that have sat idle too long. A
-// warm runtime is trusted until an actual invocation proves otherwise;
-// health checks are only used while polling a freshly created container
-// for readiness.
+// turn out to be dead, and reaping ones that have sat idle past their
+// function's own idle_timeout_ms (scale-to-zero). A warm runtime is
+// trusted until an actual invocation proves otherwise; health checks are
+// only used while polling a freshly created container for readiness.
 //
 // Container creation happens while holding the manager's single lock,
 // which serializes invocations across *all* functions while any one of
@@ -64,12 +73,17 @@ public:
     // function (never invoked yet, or scaled to zero).
     std::optional<RuntimeStatus> status(const std::string& function_name);
 
+    // All currently active runtimes across every function, e.g. for a
+    // platform-wide view of scale-to-zero behavior over time.
+    std::vector<RuntimeListEntry> list_runtimes();
+
 private:
     struct Runtime {
         std::string container_id;
         int host_port = 0;
         RuntimeState state = RuntimeState::STARTING;
         std::chrono::steady_clock::time_point last_used_at;
+        long idle_timeout_ms = 0; // copied from the function's spec at creation time
     };
 
     bool is_healthy(int host_port);
@@ -89,7 +103,6 @@ private:
     std::map<std::string, Runtime> runtimes_;
     DockerClient docker_;
 
-    long idle_timeout_ms_;
     std::atomic<bool> running_{true};
     std::thread reaper_thread_;
 };

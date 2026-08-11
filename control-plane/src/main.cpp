@@ -28,6 +28,7 @@ json function_to_json(const Function& fn) {
         {"memory_mb", fn.spec.memory_mb},
         {"cpu", fn.spec.cpu},
         {"max_concurrency", fn.spec.max_concurrency},
+        {"idle_timeout_ms", fn.spec.idle_timeout_ms},
         {"status", to_string(fn.status)},
     };
 }
@@ -36,12 +37,25 @@ Response error_response(int status, const std::string& message) {
     return Response::json(status, json{{"error", message}}.dump());
 }
 
+// The idle timeout a newly deployed function gets when its deploy
+// request does not specify one explicitly.
+long default_idle_timeout_ms() {
+    const char* env = std::getenv("FAAS_IDLE_TIMEOUT_MS");
+    if (!env) return 60000;
+    try {
+        return std::stol(env);
+    } catch (const std::exception&) {
+        return 60000;
+    }
+}
+
 } // namespace
 
 int main() {
     FunctionRegistry registry;
     RuntimeManager runtime_manager;
     Server server;
+    long platform_default_idle_timeout_ms = default_idle_timeout_ms();
 
     server.route("GET", "/health", [](const Request&, const std::vector<std::string>&) {
         return Response::json(200, json{{"status", "ok"}}.dump());
@@ -66,6 +80,7 @@ int main() {
         spec.memory_mb = body.value("memory_mb", 256);
         spec.cpu = body.value("cpu", 0.5);
         spec.max_concurrency = body.value("max_concurrency", 1);
+        spec.idle_timeout_ms = body.value("idle_timeout_ms", platform_default_idle_timeout_ms);
 
         Function fn = registry.register_function(spec);
         return Response::json(201, function_to_json(fn).dump());
@@ -139,6 +154,20 @@ int main() {
             {"idle_ms", rt->idle_ms},
         };
         return Response::json(200, body.dump());
+    });
+
+    server.route("GET", "/runtimes", [&](const Request&, const std::vector<std::string>&) {
+        json entries = json::array();
+        for (const auto& rt : runtime_manager.list_runtimes()) {
+            entries.push_back({
+                {"function", rt.function_name},
+                {"state", to_string(rt.state)},
+                {"container_id", rt.container_id},
+                {"host_port", rt.host_port},
+                {"idle_ms", rt.idle_ms},
+            });
+        }
+        return Response::json(200, entries.dump());
     });
 
     server.route("GET", "/invocations/{id}", [&](const Request&, const std::vector<std::string>&) {

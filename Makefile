@@ -1,4 +1,4 @@
-.PHONY: all build test test-integration test-lifecycle test-warm-reuse run functions clean
+.PHONY: all build test test-integration test-lifecycle test-warm-reuse test-scale-to-zero run functions clean
 
 all: build
 
@@ -17,6 +17,9 @@ test-lifecycle: build
 
 test-warm-reuse: build
 	./tests/integration/test_warm_reuse.sh
+
+test-scale-to-zero: build
+	./tests/integration/test_scale_to_zero.sh
 
 run: build
 	./control-plane/build/faas-control-plane

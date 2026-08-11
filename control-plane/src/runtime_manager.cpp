@@ -2,8 +2,6 @@
 
 #include "faas_http/http_client.hpp"
 
-#include <cstdlib>
-
 namespace faas {
 
 namespace {
@@ -11,18 +9,7 @@ constexpr int kContainerPort = 8080;
 constexpr int kReadinessAttempts = 50;
 constexpr int kReadinessIntervalMs = 100; // ~5s worst case startup wait
 constexpr int kHealthCheckTimeoutMs = 2000;
-constexpr long kDefaultIdleTimeoutMs = 60000;
 constexpr int kReaperIntervalMs = 500;
-
-long read_idle_timeout_ms() {
-    const char* env = std::getenv("FAAS_IDLE_TIMEOUT_MS");
-    if (!env) return kDefaultIdleTimeoutMs;
-    try {
-        return std::stol(env);
-    } catch (const std::exception&) {
-        return kDefaultIdleTimeoutMs;
-    }
-}
 
 long elapsed_ms(std::chrono::steady_clock::time_point start) {
     auto elapsed = std::chrono::steady_clock::now() - start;
@@ -30,8 +17,7 @@ long elapsed_ms(std::chrono::steady_clock::time_point start) {
 }
 } // namespace
 
-RuntimeManager::RuntimeManager()
-    : idle_timeout_ms_(read_idle_timeout_ms()), reaper_thread_(&RuntimeManager::reap_idle_runtimes, this) {}
+RuntimeManager::RuntimeManager() : reaper_thread_(&RuntimeManager::reap_idle_runtimes, this) {}
 
 RuntimeManager::~RuntimeManager() {
     running_ = false;
@@ -62,6 +48,7 @@ bool RuntimeManager::start_runtime(const FunctionSpec& spec, Runtime& out, std::
         if (is_healthy(port)) {
             out.container_id = run.container_id;
             out.host_port = port;
+            out.idle_timeout_ms = spec.idle_timeout_ms;
             return true;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(kReadinessIntervalMs));
@@ -80,7 +67,7 @@ void RuntimeManager::reap_idle_runtimes() {
         auto now = std::chrono::steady_clock::now();
         for (auto it = runtimes_.begin(); it != runtimes_.end();) {
             long idle_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - it->second.last_used_at).count();
-            bool expired = it->second.state == RuntimeState::IDLE && idle_ms >= idle_timeout_ms_;
+            bool expired = it->second.state == RuntimeState::IDLE && idle_ms >= it->second.idle_timeout_ms;
             if (expired) {
                 docker_.remove_container(it->second.container_id);
                 it = runtimes_.erase(it);
@@ -104,6 +91,25 @@ std::optional<RuntimeStatus> RuntimeManager::status(const std::string& function_
                     std::chrono::steady_clock::now() - it->second.last_used_at)
                     .count();
     return s;
+}
+
+std::vector<RuntimeListEntry> RuntimeManager::list_runtimes() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto now = std::chrono::steady_clock::now();
+
+    std::vector<RuntimeListEntry> entries;
+    entries.reserve(runtimes_.size());
+    for (const auto& pair : runtimes_) {
+        RuntimeListEntry entry;
+        entry.function_name = pair.first;
+        entry.state = pair.second.state;
+        entry.container_id = pair.second.container_id;
+        entry.host_port = pair.second.host_port;
+        entry.idle_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(now - pair.second.last_used_at).count();
+        entries.push_back(entry);
+    }
+    return entries;
 }
 
 InvocationResult RuntimeManager::try_invoke(const FunctionSpec& spec, const std::string& input_json,
