@@ -74,10 +74,13 @@ An empty body is treated as `{}`.
 
 If no runtime is currently running for the function, one is created
 (`docker run`) and polled for readiness before the request is
-forwarded - this is a cold start. If a healthy runtime already exists,
-it is reused directly - a warm start. A runtime that fails a health
-check, times out, or becomes unreachable is torn down rather than
-reused; the next invocation starts a fresh one.
+forwarded - this is a cold start. If a runtime already exists, it is
+reused directly with no extra health check - a warm start. If that
+warm runtime turns out to be dead (crashed or removed since the last
+call), the platform transparently retries once against a freshly
+created runtime rather than surfacing an error - the response still
+reports `"success"`, just with `cold_start: true`. A runtime that times
+out is torn down and not retried (see `docs/architecture.md` for why).
 
 Response on `200 OK` (the function ran, whether or not it succeeded):
 

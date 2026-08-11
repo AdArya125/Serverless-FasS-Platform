@@ -106,21 +106,16 @@ std::optional<RuntimeStatus> RuntimeManager::status(const std::string& function_
     return s;
 }
 
-InvocationResult RuntimeManager::invoke(const FunctionSpec& spec, const std::string& input_json) {
-    auto start = std::chrono::steady_clock::now();
+InvocationResult RuntimeManager::try_invoke(const FunctionSpec& spec, const std::string& input_json,
+                                             std::chrono::steady_clock::time_point start,
+                                             bool& connection_failed) {
+    connection_failed = false;
     InvocationResult result;
 
     std::unique_lock<std::mutex> lock(mutex_);
 
     auto it = runtimes_.find(spec.name);
     bool need_start = (it == runtimes_.end());
-    if (!need_start && !is_healthy(it->second.host_port)) {
-        // The previously created container is no longer answering; drop
-        // it rather than silently reusing a broken runtime.
-        docker_.remove_container(it->second.container_id);
-        runtimes_.erase(it);
-        need_start = true;
-    }
 
     if (need_start) {
         Runtime runtime;
@@ -162,6 +157,7 @@ InvocationResult RuntimeManager::invoke(const FunctionSpec& spec, const std::str
             runtimes_.erase(it);
         }
     } else if (!resp.ok) {
+        connection_failed = true;
         result.status = "infra_error";
         result.output = resp.error;
         if (still_tracked) {
@@ -182,6 +178,25 @@ InvocationResult RuntimeManager::invoke(const FunctionSpec& spec, const std::str
             it->second.state = RuntimeState::IDLE;
             it->second.last_used_at = std::chrono::steady_clock::now();
         }
+    }
+
+    return result;
+}
+
+InvocationResult RuntimeManager::invoke(const FunctionSpec& spec, const std::string& input_json) {
+    auto start = std::chrono::steady_clock::now();
+
+    bool connection_failed = false;
+    InvocationResult result = try_invoke(spec, input_json, start, connection_failed);
+
+    // A warm runtime is trusted without a pre-flight health check, so if
+    // it turns out to be dead (the container crashed or was removed
+    // since the last call), the caller sees a spurious failure unless we
+    // recover here: retry exactly once against a freshly created
+    // runtime. A cold attempt that fails this way is not retried again -
+    // that would just loop on a genuinely broken image.
+    if (connection_failed && !result.cold_start) {
+        result = try_invoke(spec, input_json, start, connection_failed);
     }
 
     return result;

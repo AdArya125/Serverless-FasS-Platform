@@ -36,9 +36,13 @@ struct RuntimeStatus {
 };
 
 // Owns the mapping from function name to the single running container
-// (if any) that serves it: creating one on demand, enforcing the
-// function's invocation timeout, retiring runtimes that fail a health
-// check or time out, and reaping ones that have sat idle too long.
+// (if any) that serves it: creating one on demand, reusing a warm one
+// without a proactive health check on every call, enforcing the
+// function's invocation timeout, retiring runtimes that time out or
+// turn out to be dead, and reaping ones that have sat idle too long. A
+// warm runtime is trusted until an actual invocation proves otherwise;
+// health checks are only used while polling a freshly created container
+// for readiness.
 //
 // Container creation happens while holding the manager's single lock,
 // which serializes invocations across *all* functions while any one of
@@ -71,6 +75,15 @@ private:
     bool is_healthy(int host_port);
     bool start_runtime(const FunctionSpec& spec, Runtime& out, std::string& error);
     void reap_idle_runtimes();
+
+    // Reuses an existing runtime if there is one, otherwise creates one,
+    // then makes the call. Sets connection_failed when the call could
+    // not reach the container at all (as opposed to a timeout, which
+    // means the container is alive but slow) - that specific failure is
+    // what invoke() treats as "the warm runtime turned out to be dead"
+    // and retries once against a fresh one.
+    InvocationResult try_invoke(const FunctionSpec& spec, const std::string& input_json,
+                                 std::chrono::steady_clock::time_point start, bool& connection_failed);
 
     std::mutex mutex_;
     std::map<std::string, Runtime> runtimes_;

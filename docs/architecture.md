@@ -72,7 +72,9 @@ STARTING -> READY -> BUSY -> IDLE -> TERMINATED
 - **READY**: container is up and passed a readiness check.
 - **BUSY**: currently executing an invocation.
 - **IDLE**: warm and available for reuse.
-- **FAILED**: crashed, timed out, or failed a health check. A failed
+- **FAILED**: timed out, or its container turned out to be unreachable
+  when actually invoked (a health check is only used while a fresh
+  container is starting up, not on every reuse - see below). A failed
   runtime is never reused; the runtime manager removes its container and
   drops it immediately rather than leaving it around in a broken state.
 - **TERMINATED**: stopped and removed, either due to the idle timeout
@@ -80,6 +82,31 @@ STARTING -> READY -> BUSY -> IDLE -> TERMINATED
   "terminated" record - a function with no runtime simply has no entry
   in the runtime manager's table, which is also its state right after
   registration, before the first invocation.
+
+## Warm reuse
+
+An existing runtime is reused directly, with no proactive health check
+before the call - that check would cost a full extra round trip on
+every single warm invocation just to confirm something that was already
+true moments ago. Instead, the runtime manager trusts a warm runtime
+until an actual invocation proves it wrong:
+
+- If the call cannot reach the container at all (it crashed, was OOM
+  killed, or was removed out from under the platform), that specific
+  failure is treated as "the warm runtime turned out to be dead," not as
+  a caller-visible error. The dead runtime is torn down and the
+  invocation is retried exactly once against a freshly created one - the
+  caller sees a normal successful response with `cold_start: true`,
+  not a failure that happened to be the platform's own bookkeeping
+  falling behind reality.
+- A timeout is not treated this way and is not retried: the container
+  answered the connection, so it is presumably still alive and just slow
+  or stuck, and retrying a guaranteed-timeout call would only double the
+  caller's wait for no benefit.
+- A genuinely broken image (one where even a fresh container cannot be
+  reached) is not retried a second time either - retrying indefinitely
+  against something that cannot work would just hide the failure behind
+  extra latency instead of reporting it.
 
 ## Timeout enforcement and idle expiry
 

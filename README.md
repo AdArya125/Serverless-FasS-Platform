@@ -20,14 +20,16 @@ invocations that exceed a function's `timeout_ms` are cut off and their
 runtime torn down rather than reused, and a background reaper stops any
 runtime that has sat idle past a configurable timeout - a function with
 no traffic drops to zero running containers and a later invocation
-recreates one on demand. Idle timeout is currently a single value for
-the whole platform (`FAAS_IDLE_TIMEOUT_MS`); making it per-function is
-still to come.
+recreates one on demand. The warm path skips any proactive health check
+(one less round trip per call); if a warm runtime turns out to be dead,
+the platform retries once against a fresh one instead of surfacing an
+error. Idle timeout is currently a single value for the whole platform
+(`FAAS_IDLE_TIMEOUT_MS`); making it per-function is still to come.
 
 - [x] Skeleton (repo, API contract, CLI, function model)
 - [x] Single runtime (create container, invoke, return result)
 - [x] Lifecycle (state machine, timeout, idle expiry)
-- [ ] Warm reuse (per-function tuning, concurrency-safe reuse)
+- [x] Warm reuse (no pre-flight health check, self-healing retry on a dead runtime)
 - [ ] Scale-to-zero (per-function idle timeout, metrics)
 - [ ] Persistence (SQLite)
 - [ ] Observability (Prometheus)
@@ -101,7 +103,7 @@ cold_start: true
 $ cloudfn invoke hello --data '{"name":"Adi"}'
 status: success
 result: "Hello, Adi!"
-duration: 1 ms
+duration: 0 ms
 cold_start: false
 
 $ cloudfn delete hello
@@ -119,7 +121,7 @@ Unit tests live in `tests/` and use a small header-only test framework
 (`tests/test_framework.hpp`) rather than a third-party dependency. Run
 them with `make test` - they do not need Docker.
 
-Two integration tests exercise Docker directly and are not part of
+Three integration tests exercise Docker directly and are not part of
 `make test`:
 
 - `make test-integration` builds the hello image, deploys it, invokes it
@@ -129,6 +131,10 @@ Two integration tests exercise Docker directly and are not part of
   enforcement (a slow invocation is cut off and its runtime removed),
   the `IDLE` state after a successful call, idle-expiry scale-to-zero,
   and that a later invocation recreates the runtime.
+- `make test-warm-reuse` kills a warm runtime's container out from under
+  the platform and checks that the next invocation recovers
+  transparently (a fresh cold start reported as a normal success)
+  instead of surfacing an error.
 
 ## Repository layout
 
