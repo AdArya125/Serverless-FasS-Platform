@@ -1,4 +1,4 @@
-.PHONY: all build test run functions clean
+.PHONY: all build test test-integration run functions clean
 
 all: build
 
@@ -8,6 +8,9 @@ build:
 
 test:
 	$(MAKE) -C control-plane test
+
+test-integration: build
+	./tests/integration/test_invoke.sh
 
 run: build
 	./control-plane/build/faas-control-plane

@@ -1,9 +1,10 @@
 """Sample FaaS function: greets the caller by name.
 
 Implements the platform's function contract: an HTTP server on port 8080
-that accepts POST /invoke with a JSON body and returns a JSON body. This
-is the trivial workload used to measure platform overhead (see
-docs/architecture.md).
+that accepts POST /invoke with a JSON body and returns a JSON value,
+which becomes the "result" field of the platform's invoke response
+unchanged. This is the trivial workload used to measure platform
+overhead (see docs/architecture.md).
 """
 
 import json
@@ -25,7 +26,7 @@ class Handler(BaseHTTPRequestHandler):
             payload = {}
 
         name = payload.get("name", "world")
-        result = {"result": f"Hello, {name}!"}
+        result = f"Hello, {name}!"
 
         body = json.dumps(result).encode("utf-8")
         self.send_response(200)

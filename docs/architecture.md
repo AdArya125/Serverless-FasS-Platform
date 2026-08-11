@@ -38,16 +38,22 @@ A function image is an ordinary Docker container that, once started,
 listens on port 8080 and accepts:
 
 ```
-POST /invoke
-Content-Type: application/json
-
-<input JSON>
+GET  /health          -> 200 once the function is ready to serve traffic
+POST /invoke           Content-Type: application/json, arbitrary JSON body
 ```
 
-and responds with a JSON body. The runtime manager maps a container's
-internal port 8080 to a host port chosen at container-creation time and
-talks to it exactly like any other HTTP client. `functions/hello` is the
-reference implementation of this contract.
+`/invoke` should respond with a JSON value - the platform passes it back
+to the caller unchanged as the `result` field of the invoke response.
+The value can be any JSON type (string, object, array, ...); the
+platform does not assume a particular shape. A 2xx response is a
+success; anything else is treated as a user function failure rather
+than a platform failure.
+
+The runtime manager lets Docker auto-assign a host port for the
+container's internal 8080 and talks to it exactly like any other HTTP
+client, polling `/health` until it responds before forwarding the first
+request. `functions/hello` is the reference implementation of this
+contract.
 
 ## Runtime state machine
 

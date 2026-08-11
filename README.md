@@ -12,13 +12,13 @@ API contract.
 
 ## Status
 
-The skeleton is complete: the API contract, function data model, and CLI
-are in place. Function registration works end-to-end against an
-in-memory registry; invocation is stubbed until the runtime manager
-actually creates containers.
+Function registration, deployment, and invocation all work end to end:
+`cloudfn invoke` creates a Docker container on first use, reuses it on
+later calls, and reports timing and whether the call was a cold or warm
+start.
 
 - [x] Skeleton (repo, API contract, CLI, function model)
-- [ ] Single runtime (create container, invoke, return result)
+- [x] Single runtime (create container, invoke, return result)
 - [ ] Lifecycle (state machine, timeout, idle expiry)
 - [ ] Warm reuse
 - [ ] Scale-to-zero
@@ -62,6 +62,14 @@ The control plane listens on `0.0.0.0:8080` by default; override with
 
 ## CLI usage
 
+Function images run as ordinary Docker containers, so build one first:
+
+```bash
+make functions   # docker build -t hello:v1 functions/hello
+```
+
+Then, with the control plane running (`make run`, in another terminal):
+
 ```bash
 $ cloudfn deploy hello --image hello:v1
 deployed hello
@@ -77,20 +85,36 @@ Concurrency: 1
 Status:      READY
 
 $ cloudfn invoke hello --data '{"name":"Adi"}'
-# not implemented yet
+status: success
+result: "Hello, Adi!"
+duration: 930 ms
+cold_start: true
+
+$ cloudfn invoke hello --data '{"name":"Adi"}'
+status: success
+result: "Hello, Adi!"
+duration: 1 ms
+cold_start: false
 
 $ cloudfn delete hello
 deleted hello
 ```
 
-The `cloudfn` binary is built at `cli/build/cloudfn`; add it to your
-`PATH` or invoke it by full path.
+The first invocation starts a container (cold start); as long as it
+stays healthy, later invocations reuse it directly (warm start). The
+`cloudfn` binary is built at `cli/build/cloudfn`; add it to your `PATH`
+or invoke it by full path.
 
 ## Testing
 
 Unit tests live in `tests/` and use a small header-only test framework
 (`tests/test_framework.hpp`) rather than a third-party dependency. Run
-them with `make test`.
+them with `make test` - they do not need Docker.
+
+`tests/integration/test_invoke.sh` (run via `make test-integration`)
+exercises the real invoke path against Docker: it builds the hello
+image, deploys it, invokes it twice, and checks that the first call is
+a cold start and the second is a warm start.
 
 ## Repository layout
 

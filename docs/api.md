@@ -16,7 +16,7 @@ The control plane exposes a plain HTTP/JSON API on port 8080 by default
 | POST   | `/functions`                | done    | Register/redeploy a function          |
 | GET    | `/functions/{name}`         | done    | Fetch function metadata               |
 | DELETE | `/functions/{name}`         | done    | Remove a function                     |
-| POST   | `/functions/{name}/invoke`  | stub    | Invoke a function                     |
+| POST   | `/functions/{name}/invoke`  | done    | Invoke a function                     |
 | GET    | `/invocations/{id}`         | stub    | Fetch a past invocation record        |
 | GET    | `/metrics`                  | planned | Prometheus text-format metrics        |
 
@@ -69,8 +69,15 @@ Response: `204 No Content`, or `404 Not Found`.
 ## POST /functions/{name}/invoke
 
 Request body: arbitrary JSON, passed through to the function unchanged.
+An empty body is treated as `{}`.
 
-Planned response, once invocation is implemented:
+If no runtime is currently running for the function, one is created
+(`docker run`) and polled for readiness before the request is
+forwarded - this is a cold start. If a healthy runtime already exists,
+it is reused directly - a warm start. A runtime that fails a health
+check is discarded and replaced rather than reused.
+
+Response on `200 OK` (the function ran, whether or not it succeeded):
 
 ```json
 {
@@ -80,6 +87,28 @@ Planned response, once invocation is implemented:
   "cold_start": false
 }
 ```
+
+`status` is `"success"` if the function returned a 2xx response, or
+`"error"` if it returned a non-2xx response (a user function failure).
+`result` is whatever JSON value the function returned, unmodified; if
+the function did not return valid JSON, `result` holds the raw response
+text instead. `duration_ms` covers the whole call, so a cold start's
+duration includes container creation and the readiness wait.
+
+Response on `502 Bad Gateway` (the platform could not run the function
+at all - an infrastructure failure, e.g. the image does not exist or
+the container never became healthy):
+
+```json
+{
+  "status": "error",
+  "error": "failed to start container: ...",
+  "duration_ms": 4108,
+  "cold_start": true
+}
+```
+
+Response on `404 Not Found` if the function is not registered.
 
 ## GET /invocations/{id}
 

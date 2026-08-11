@@ -1,11 +1,11 @@
 // Control plane entry point.
 //
 // Wires up the API contract (see docs/api.md) against a purely
-// in-memory function registry. Invocation and invocation-history
-// endpoints are stubbed out until the runtime manager and persistence
-// layer exist.
+// in-memory function registry and a Docker-backed runtime manager.
+// Invocation history is stubbed out until the persistence layer exists.
 
 #include "faas/function_registry.hpp"
+#include "faas/runtime_manager.hpp"
 #include "faas_http/http_server.hpp"
 
 #include <nlohmann/json.hpp>
@@ -40,6 +40,7 @@ Response error_response(int status, const std::string& message) {
 
 int main() {
     FunctionRegistry registry;
+    RuntimeManager runtime_manager;
     Server server;
 
     server.route("GET", "/health", [](const Request&, const std::vector<std::string>&) {
@@ -81,10 +82,37 @@ int main() {
         return Response::empty(204);
     });
 
-    server.route("POST", "/functions/{name}/invoke", [&](const Request&, const std::vector<std::string>& params) {
+    server.route("POST", "/functions/{name}/invoke", [&](const Request& req, const std::vector<std::string>& params) {
         auto fn = registry.get(params[0]);
         if (!fn) return error_response(404, "function not found: " + params[0]);
-        return error_response(501, "invocation is not implemented yet");
+
+        std::string input = req.body.empty() ? "{}" : req.body;
+        InvocationResult result = runtime_manager.invoke(fn->spec, input);
+
+        if (result.status == "infra_error") {
+            json body = {
+                {"status", "error"},
+                {"error", result.output},
+                {"duration_ms", result.duration_ms},
+                {"cold_start", result.cold_start},
+            };
+            return Response::json(502, body.dump());
+        }
+
+        json function_result;
+        try {
+            function_result = json::parse(result.output);
+        } catch (const std::exception&) {
+            function_result = result.output; // function did not return JSON; report it as a raw string
+        }
+
+        json body = {
+            {"status", result.status},
+            {"result", function_result},
+            {"duration_ms", result.duration_ms},
+            {"cold_start", result.cold_start},
+        };
+        return Response::json(200, body.dump());
     });
 
     server.route("GET", "/invocations/{id}", [&](const Request&, const std::vector<std::string>&) {

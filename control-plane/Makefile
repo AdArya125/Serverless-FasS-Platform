@@ -1,5 +1,5 @@
 CXX := g++
-CXXFLAGS := -std=c++17 -Wall -Wextra -O2 -pthread -I include -I ../common/include
+CXXFLAGS := -std=c++17 -Wall -Wextra -O2 -pthread -I include -I ../common/include -MMD -MP
 LDFLAGS := -pthread
 
 BUILD := build
@@ -9,6 +9,7 @@ CP_SRC := $(wildcard src/*.cpp)
 COMMON_SRC := ../common/src/http_server.cpp ../common/src/http_client.cpp
 SRC := $(CP_SRC) $(COMMON_SRC)
 OBJ := $(patsubst %.cpp,$(BUILD)/%.o,$(notdir $(SRC)))
+DEP := $(OBJ:.o=.d)
 
 vpath %.cpp src ../common/src
 
@@ -34,3 +35,5 @@ test: $(LIB_OBJ)
 
 clean:
 	rm -rf $(BUILD)
+
+-include $(DEP)

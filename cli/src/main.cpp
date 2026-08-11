@@ -142,12 +142,30 @@ int cmd_invoke(const Args& args) {
     }
     std::string data = args.flags.count("data") ? args.flags.at("data") : "{}";
     auto resp = make_client().post("/functions/" + args.positional[0] + "/invoke", data);
-    if (!resp.ok || resp.status >= 300) {
+    if (!resp.ok) {
         print_api_error(resp);
         return 1;
     }
-    std::cout << resp.body << "\n";
-    return 0;
+
+    json body;
+    try {
+        body = json::parse(resp.body);
+    } catch (const std::exception&) {
+        std::cerr << "error: unexpected response: " << resp.body << "\n";
+        return 1;
+    }
+
+    if (resp.status >= 300) {
+        std::cerr << "error: " << body.value("error", resp.body) << "\n";
+        return 1;
+    }
+
+    std::cout << "status: " << body.value("status", "") << "\n";
+    std::cout << "result: " << (body.contains("result") ? body["result"].dump() : "null") << "\n";
+    std::cout << "duration: " << body.value("duration_ms", 0) << " ms\n";
+    std::cout << "cold_start: " << (body.value("cold_start", false) ? "true" : "false") << "\n";
+
+    return body.value("status", "") == "success" ? 0 : 1;
 }
 
 int cmd_logs(const Args& args) {
