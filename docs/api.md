@@ -17,6 +17,7 @@ The control plane exposes a plain HTTP/JSON API on port 8080 by default
 | GET    | `/functions/{name}`         | done    | Fetch function metadata               |
 | DELETE | `/functions/{name}`         | done    | Remove a function                     |
 | POST   | `/functions/{name}/invoke`  | done    | Invoke a function                     |
+| GET    | `/functions/{name}/runtime` | done    | Inspect the current runtime, if any   |
 | GET    | `/invocations/{id}`         | stub    | Fetch a past invocation record        |
 | GET    | `/metrics`                  | planned | Prometheus text-format metrics        |
 
@@ -75,7 +76,8 @@ If no runtime is currently running for the function, one is created
 (`docker run`) and polled for readiness before the request is
 forwarded - this is a cold start. If a healthy runtime already exists,
 it is reused directly - a warm start. A runtime that fails a health
-check is discarded and replaced rather than reused.
+check, times out, or becomes unreachable is torn down rather than
+reused; the next invocation starts a fresh one.
 
 Response on `200 OK` (the function ran, whether or not it succeeded):
 
@@ -88,12 +90,20 @@ Response on `200 OK` (the function ran, whether or not it succeeded):
 }
 ```
 
-`status` is `"success"` if the function returned a 2xx response, or
-`"error"` if it returned a non-2xx response (a user function failure).
-`result` is whatever JSON value the function returned, unmodified; if
-the function did not return valid JSON, `result` holds the raw response
-text instead. `duration_ms` covers the whole call, so a cold start's
-duration includes container creation and the readiness wait.
+`status` is one of:
+
+- `"success"` - the function returned a 2xx response. `result` holds
+  whatever JSON value it returned, unmodified; if the function did not
+  return valid JSON, `result` holds the raw response text instead.
+- `"error"` - the function returned a non-2xx response (a user function
+  failure; the runtime itself is healthy and stays warm). `result` holds
+  its response body the same way as above.
+- `"timeout"` - the function did not respond within the function's
+  configured `timeout_ms`. `error` holds a message instead of `result`.
+  The runtime is stopped and removed, not reused.
+
+`duration_ms` covers the whole call, so a cold start's duration includes
+container creation and the readiness wait.
 
 Response on `502 Bad Gateway` (the platform could not run the function
 at all - an infrastructure failure, e.g. the image does not exist or
@@ -109,6 +119,34 @@ the container never became healthy):
 ```
 
 Response on `404 Not Found` if the function is not registered.
+
+## GET /functions/{name}/runtime
+
+Inspects the runtime currently backing a function, if any. Useful for
+observing lifecycle transitions directly (e.g. watching a runtime go
+`IDLE` after a call, then disappear once the idle timeout reaps it).
+
+Response on `200 OK`:
+
+```json
+{
+  "state": "IDLE",
+  "container_id": "2d629e7ca249...",
+  "host_port": 32772,
+  "idle_ms": 1832
+}
+```
+
+`state` is one of `STARTING`, `READY`, `BUSY`, `IDLE`, `FAILED`,
+`TERMINATED` (see `docs/architecture.md`); in practice only `BUSY` and
+`IDLE` are observable through this endpoint today, since runtime
+creation happens under a lock that a status query also waits on, and
+failed/terminated runtimes are removed immediately rather than kept
+around in either state.
+
+Response on `404 Not Found` if the function is not registered, or if no
+runtime is currently running for it (never invoked yet, or scaled to
+zero after being idle).
 
 ## GET /invocations/{id}
 

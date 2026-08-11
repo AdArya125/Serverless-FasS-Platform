@@ -161,7 +161,11 @@ int cmd_invoke(const Args& args) {
     }
 
     std::cout << "status: " << body.value("status", "") << "\n";
-    std::cout << "result: " << (body.contains("result") ? body["result"].dump() : "null") << "\n";
+    if (body.contains("result")) {
+        std::cout << "result: " << body["result"].dump() << "\n";
+    } else if (body.contains("error")) {
+        std::cout << "error: " << body.value("error", "") << "\n";
+    }
     std::cout << "duration: " << body.value("duration_ms", 0) << " ms\n";
     std::cout << "cold_start: " << (body.value("cold_start", false) ? "true" : "false") << "\n";
 

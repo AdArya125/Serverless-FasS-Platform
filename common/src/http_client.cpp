@@ -3,8 +3,10 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 
+#include <cerrno>
 #include <cstring>
 #include <sstream>
 
@@ -12,22 +14,36 @@ namespace faas_http {
 
 Client::Client(std::string host, int port) : host_(std::move(host)), port_(port) {}
 
-ClientResponse Client::get(const std::string& path) { return request("GET", path, "", ""); }
-
-ClientResponse Client::post(const std::string& path, const std::string& body, const std::string& content_type) {
-    return request("POST", path, body, content_type);
+ClientResponse Client::get(const std::string& path, int timeout_ms) {
+    return request("GET", path, "", "", timeout_ms);
 }
 
-ClientResponse Client::del(const std::string& path) { return request("DELETE", path, "", ""); }
+ClientResponse Client::post(const std::string& path, const std::string& body, const std::string& content_type,
+                             int timeout_ms) {
+    return request("POST", path, body, content_type, timeout_ms);
+}
+
+ClientResponse Client::del(const std::string& path, int timeout_ms) {
+    return request("DELETE", path, "", "", timeout_ms);
+}
 
 ClientResponse Client::request(const std::string& method, const std::string& path,
-                                const std::string& body, const std::string& content_type) {
+                                const std::string& body, const std::string& content_type,
+                                int timeout_ms) {
     ClientResponse result;
 
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) {
         result.error = "failed to create socket";
         return result;
+    }
+
+    if (timeout_ms > 0) {
+        struct timeval tv;
+        tv.tv_sec = timeout_ms / 1000;
+        tv.tv_usec = (timeout_ms % 1000) * 1000;
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
     }
 
     sockaddr_in addr{};
@@ -73,7 +89,14 @@ ClientResponse Client::request(const std::string& method, const std::string& pat
     while ((n = recv(sock, buf, sizeof(buf), 0)) > 0) {
         data.append(buf, static_cast<size_t>(n));
     }
+    bool recv_timed_out = (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK));
     close(sock);
+
+    if (recv_timed_out) {
+        result.timed_out = true;
+        result.error = "request timed out after " + std::to_string(timeout_ms) + "ms";
+        return result;
+    }
 
     if (data.empty()) {
         result.error = "empty response from server";

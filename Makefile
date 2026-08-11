@@ -1,4 +1,4 @@
-.PHONY: all build test test-integration run functions clean
+.PHONY: all build test test-integration test-lifecycle run functions clean
 
 all: build
 
@@ -12,11 +12,15 @@ test:
 test-integration: build
 	./tests/integration/test_invoke.sh
 
+test-lifecycle: build
+	./tests/integration/test_lifecycle.sh
+
 run: build
 	./control-plane/build/faas-control-plane
 
 functions:
 	docker build -t hello:v1 functions/hello
+	docker build -t sleep:v1 functions/sleep
 
 clean:
 	$(MAKE) -C control-plane clean

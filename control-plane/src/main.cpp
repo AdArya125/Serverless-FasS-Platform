@@ -99,6 +99,16 @@ int main() {
             return Response::json(502, body.dump());
         }
 
+        if (result.status == "timeout") {
+            json body = {
+                {"status", "timeout"},
+                {"error", result.output},
+                {"duration_ms", result.duration_ms},
+                {"cold_start", result.cold_start},
+            };
+            return Response::json(200, body.dump());
+        }
+
         json function_result;
         try {
             function_result = json::parse(result.output);
@@ -111,6 +121,22 @@ int main() {
             {"result", function_result},
             {"duration_ms", result.duration_ms},
             {"cold_start", result.cold_start},
+        };
+        return Response::json(200, body.dump());
+    });
+
+    server.route("GET", "/functions/{name}/runtime", [&](const Request&, const std::vector<std::string>& params) {
+        auto fn = registry.get(params[0]);
+        if (!fn) return error_response(404, "function not found: " + params[0]);
+
+        auto rt = runtime_manager.status(params[0]);
+        if (!rt) return error_response(404, "no runtime currently running for " + params[0]);
+
+        json body = {
+            {"state", to_string(rt->state)},
+            {"container_id", rt->container_id},
+            {"host_port", rt->host_port},
+            {"idle_ms", rt->idle_ms},
         };
         return Response::json(200, body.dump());
     });
