@@ -9,6 +9,7 @@ cd "$(dirname "$0")/../.."
 
 PORT=18083
 IMAGE=hello:v1
+DB_PATH=/tmp/faas-test-scale-to-zero.db
 
 echo "building project"
 make build >/dev/null
@@ -16,14 +17,16 @@ make build >/dev/null
 echo "building hello function image"
 docker build -t "$IMAGE" functions/hello >/dev/null
 
+rm -f "$DB_PATH"
 cleanup() {
     [[ -n "${SERVER_PID:-}" ]] && kill "$SERVER_PID" >/dev/null 2>&1 || true
     docker ps -q --filter "ancestor=$IMAGE" | xargs -r docker rm -f >/dev/null 2>&1 || true
+    rm -f "$DB_PATH"
 }
 trap cleanup EXIT
 
 echo "starting control plane"
-FAAS_PORT=$PORT ./control-plane/build/faas-control-plane > /tmp/faas-scale-to-zero.log 2>&1 &
+FAAS_PORT=$PORT FAAS_DB_PATH=$DB_PATH ./control-plane/build/faas-control-plane > /tmp/faas-scale-to-zero.log 2>&1 &
 SERVER_PID=$!
 
 for _ in $(seq 1 50); do

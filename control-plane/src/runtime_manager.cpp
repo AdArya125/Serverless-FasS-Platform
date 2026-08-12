@@ -17,7 +17,8 @@ long elapsed_ms(std::chrono::steady_clock::time_point start) {
 }
 } // namespace
 
-RuntimeManager::RuntimeManager() : reaper_thread_(&RuntimeManager::reap_idle_runtimes, this) {}
+RuntimeManager::RuntimeManager(Metrics& metrics, std::unique_ptr<ContainerBackend> backend)
+    : backend_(std::move(backend)), metrics_(metrics), reaper_thread_(&RuntimeManager::reap_idle_runtimes, this) {}
 
 RuntimeManager::~RuntimeManager() {
     running_ = false;
@@ -31,22 +32,22 @@ bool RuntimeManager::is_healthy(int host_port) {
 }
 
 bool RuntimeManager::start_runtime(const FunctionSpec& spec, Runtime& out, std::string& error) {
-    DockerClient::RunResult run = docker_.run_container(spec.image, kContainerPort);
+    ContainerBackend::RunResult run = backend_->run_container(spec.image, kContainerPort);
     if (!run.ok) {
         error = "failed to start container: " + run.error;
         return false;
     }
 
-    int port = docker_.get_host_port(run.container_id, kContainerPort);
+    int port = backend_->get_host_port(run.id, kContainerPort);
     if (port <= 0) {
-        docker_.remove_container(run.container_id);
-        error = "failed to determine host port for container " + run.container_id;
+        backend_->remove_container(run.id);
+        error = "failed to determine host port for container " + run.id;
         return false;
     }
 
     for (int attempt = 0; attempt < kReadinessAttempts; ++attempt) {
         if (is_healthy(port)) {
-            out.container_id = run.container_id;
+            out.container_id = run.id;
             out.host_port = port;
             out.idle_timeout_ms = spec.idle_timeout_ms;
             return true;
@@ -54,7 +55,7 @@ bool RuntimeManager::start_runtime(const FunctionSpec& spec, Runtime& out, std::
         std::this_thread::sleep_for(std::chrono::milliseconds(kReadinessIntervalMs));
     }
 
-    docker_.remove_container(run.container_id);
+    backend_->remove_container(run.id);
     error = "container did not become healthy within the startup window";
     return false;
 }
@@ -69,8 +70,9 @@ void RuntimeManager::reap_idle_runtimes() {
             long idle_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - it->second.last_used_at).count();
             bool expired = it->second.state == RuntimeState::IDLE && idle_ms >= it->second.idle_timeout_ms;
             if (expired) {
-                docker_.remove_container(it->second.container_id);
+                backend_->remove_container(it->second.container_id);
                 it = runtimes_.erase(it);
+                metrics_.record_runtime_terminated("idle_timeout");
             } else {
                 ++it;
             }
@@ -112,6 +114,16 @@ std::vector<RuntimeListEntry> RuntimeManager::list_runtimes() {
     return entries;
 }
 
+void RuntimeManager::terminate(const std::string& function_name) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = runtimes_.find(function_name);
+    if (it == runtimes_.end()) return;
+
+    backend_->remove_container(it->second.container_id);
+    runtimes_.erase(it);
+    metrics_.record_runtime_terminated("deleted");
+}
+
 InvocationResult RuntimeManager::try_invoke(const FunctionSpec& spec, const std::string& input_json,
                                              std::chrono::steady_clock::time_point start,
                                              bool& connection_failed) {
@@ -135,6 +147,7 @@ InvocationResult RuntimeManager::try_invoke(const FunctionSpec& spec, const std:
         }
         result.cold_start = true;
         it = runtimes_.emplace(spec.name, runtime).first;
+        metrics_.record_runtime_created();
     } else {
         result.cold_start = false;
     }
@@ -159,16 +172,18 @@ InvocationResult RuntimeManager::try_invoke(const FunctionSpec& spec, const std:
         result.status = "timeout";
         result.output = "function exceeded timeout of " + std::to_string(spec.timeout_ms) + "ms";
         if (still_tracked) {
-            docker_.remove_container(container_id);
+            backend_->remove_container(container_id);
             runtimes_.erase(it);
+            metrics_.record_runtime_terminated("timeout");
         }
     } else if (!resp.ok) {
         connection_failed = true;
         result.status = "infra_error";
         result.output = resp.error;
         if (still_tracked) {
-            docker_.remove_container(container_id);
+            backend_->remove_container(container_id);
             runtimes_.erase(it);
+            metrics_.record_runtime_terminated("dead");
         }
     } else if (resp.status >= 200 && resp.status < 300) {
         result.status = "success";
@@ -205,6 +220,7 @@ InvocationResult RuntimeManager::invoke(const FunctionSpec& spec, const std::str
         result = try_invoke(spec, input_json, start, connection_failed);
     }
 
+    metrics_.record_invocation(result.status, result.cold_start, static_cast<double>(result.duration_ms));
     return result;
 }
 

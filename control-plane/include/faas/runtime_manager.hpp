@@ -1,12 +1,14 @@
 #pragma once
 
-#include "faas/docker_client.hpp"
+#include "faas/container_backend.hpp"
 #include "faas/function.hpp"
+#include "faas/metrics.hpp"
 #include "faas/runtime_state.hpp"
 
 #include <atomic>
 #include <chrono>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -44,14 +46,16 @@ struct RuntimeListEntry {
     long idle_ms;
 };
 
-// Owns the mapping from function name to the single running container
-// (if any) that serves it: creating one on demand, reusing a warm one
-// without a proactive health check on every call, enforcing the
-// function's invocation timeout, retiring runtimes that time out or
-// turn out to be dead, and reaping ones that have sat idle past their
-// function's own idle_timeout_ms (scale-to-zero). A warm runtime is
-// trusted until an actual invocation proves otherwise; health checks are
-// only used while polling a freshly created container for readiness.
+// Owns the mapping from function name to the single running runtime (if
+// any) that serves it, via whichever ContainerBackend it was given
+// (Docker or Kubernetes - this class does not know or care which):
+// creating one on demand, reusing a warm one without a proactive health
+// check on every call, enforcing the function's invocation timeout,
+// retiring runtimes that time out or turn out to be dead, and reaping
+// ones that have sat idle past their function's own idle_timeout_ms
+// (scale-to-zero). A warm runtime is trusted until an actual invocation
+// proves otherwise; health checks are only used while polling a freshly
+// created runtime for readiness.
 //
 // Container creation happens while holding the manager's single lock,
 // which serializes invocations across *all* functions while any one of
@@ -62,7 +66,7 @@ struct RuntimeListEntry {
 // creation finishes.
 class RuntimeManager {
 public:
-    RuntimeManager();
+    RuntimeManager(Metrics& metrics, std::unique_ptr<ContainerBackend> backend);
     ~RuntimeManager();
     RuntimeManager(const RuntimeManager&) = delete;
     RuntimeManager& operator=(const RuntimeManager&) = delete;
@@ -76,6 +80,12 @@ public:
     // All currently active runtimes across every function, e.g. for a
     // platform-wide view of scale-to-zero behavior over time.
     std::vector<RuntimeListEntry> list_runtimes();
+
+    // Immediately stops and forgets the runtime for a function, if one
+    // is running. Used when a function is deleted, so its container/pod
+    // does not linger until the idle timeout would otherwise reap it -
+    // or forever, if it happens to still be busy at delete time.
+    void terminate(const std::string& function_name);
 
 private:
     struct Runtime {
@@ -101,7 +111,8 @@ private:
 
     std::mutex mutex_;
     std::map<std::string, Runtime> runtimes_;
-    DockerClient docker_;
+    std::unique_ptr<ContainerBackend> backend_;
+    Metrics& metrics_;
 
     std::atomic<bool> running_{true};
     std::thread reaper_thread_;

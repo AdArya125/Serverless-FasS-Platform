@@ -1,4 +1,4 @@
-.PHONY: all build test test-integration test-lifecycle test-warm-reuse test-scale-to-zero run functions clean
+.PHONY: all build test test-integration test-lifecycle test-warm-reuse test-scale-to-zero test-persistence test-kubernetes run functions clean
 
 all: build
 
@@ -20,6 +20,12 @@ test-warm-reuse: build
 
 test-scale-to-zero: build
 	./tests/integration/test_scale_to_zero.sh
+
+test-persistence: build
+	./tests/integration/test_persistence.sh
+
+test-kubernetes: build
+	./tests/integration/test_kubernetes.sh
 
 run: build
 	./control-plane/build/faas-control-plane

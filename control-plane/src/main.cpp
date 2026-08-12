@@ -1,10 +1,18 @@
 // Control plane entry point.
 //
-// Wires up the API contract (see docs/api.md) against a purely
-// in-memory function registry and a Docker-backed runtime manager.
-// Invocation history is stubbed out until the persistence layer exists.
+// Wires up the API contract (see docs/api.md) against a SQLite-backed
+// function registry and invocation history, and a runtime manager backed
+// by either Docker or Kubernetes (FAAS_RUNTIME_BACKEND, default docker).
+// Runtimes themselves are not persisted (see docs/architecture.md for
+// why); they are rebuilt on demand after a restart, same as after any
+// scale-to-zero.
 
+#include "faas/database.hpp"
+#include "faas/docker_client.hpp"
 #include "faas/function_registry.hpp"
+#include "faas/invocation_store.hpp"
+#include "faas/kubernetes_client.hpp"
+#include "faas/metrics.hpp"
 #include "faas/runtime_manager.hpp"
 #include "faas_http/http_server.hpp"
 
@@ -12,6 +20,7 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <memory>
 
 using json = nlohmann::json;
 using namespace faas;
@@ -49,11 +58,27 @@ long default_idle_timeout_ms() {
     }
 }
 
+std::unique_ptr<ContainerBackend> make_runtime_backend() {
+    const char* env = std::getenv("FAAS_RUNTIME_BACKEND");
+    std::string kind = env ? env : "docker";
+    if (kind == "kubernetes" || kind == "k8s") {
+        std::cout << "runtime backend: kubernetes (kubectl)\n";
+        return std::make_unique<KubernetesClient>();
+    }
+    std::cout << "runtime backend: docker\n";
+    return std::make_unique<DockerClient>();
+}
+
 } // namespace
 
 int main() {
-    FunctionRegistry registry;
-    RuntimeManager runtime_manager;
+    const char* db_path_env = std::getenv("FAAS_DB_PATH");
+    Database db(db_path_env ? db_path_env : "faas.db");
+
+    FunctionRegistry registry(db);
+    InvocationStore invocations(db);
+    Metrics metrics;
+    RuntimeManager runtime_manager(metrics, make_runtime_backend());
     Server server;
     long platform_default_idle_timeout_ms = default_idle_timeout_ms();
 
@@ -94,6 +119,7 @@ int main() {
 
     server.route("DELETE", "/functions/{name}", [&](const Request&, const std::vector<std::string>& params) {
         if (!registry.remove(params[0])) return error_response(404, "function not found: " + params[0]);
+        runtime_manager.terminate(params[0]);
         return Response::empty(204);
     });
 
@@ -104,8 +130,12 @@ int main() {
         std::string input = req.body.empty() ? "{}" : req.body;
         InvocationResult result = runtime_manager.invoke(fn->spec, input);
 
+        std::string invocation_id = invocations.record(params[0], input, result.status, result.output,
+                                                         result.duration_ms, result.cold_start);
+
         if (result.status == "infra_error") {
             json body = {
+                {"invocation_id", invocation_id},
                 {"status", "error"},
                 {"error", result.output},
                 {"duration_ms", result.duration_ms},
@@ -116,6 +146,7 @@ int main() {
 
         if (result.status == "timeout") {
             json body = {
+                {"invocation_id", invocation_id},
                 {"status", "timeout"},
                 {"error", result.output},
                 {"duration_ms", result.duration_ms},
@@ -132,6 +163,7 @@ int main() {
         }
 
         json body = {
+            {"invocation_id", invocation_id},
             {"status", result.status},
             {"result", function_result},
             {"duration_ms", result.duration_ms},
@@ -170,8 +202,33 @@ int main() {
         return Response::json(200, entries.dump());
     });
 
-    server.route("GET", "/invocations/{id}", [&](const Request&, const std::vector<std::string>&) {
-        return error_response(501, "invocation records are not implemented yet");
+    server.route("GET", "/metrics", [&](const Request&, const std::vector<std::string>&) {
+        long active_runtimes = static_cast<long>(runtime_manager.list_runtimes().size());
+        Response resp = Response::text(200, metrics.render(active_runtimes));
+        resp.headers["Content-Type"] = "text/plain; version=0.0.4";
+        return resp;
+    });
+
+    server.route("GET", "/invocations/{id}", [&](const Request&, const std::vector<std::string>& params) {
+        auto record = invocations.get(params[0]);
+        if (!record) return error_response(404, "invocation not found: " + params[0]);
+
+        json output;
+        try {
+            output = json::parse(record->output);
+        } catch (const std::exception&) {
+            output = record->output;
+        }
+
+        json body = {
+            {"id", record->id},
+            {"function", record->function_name},
+            {"status", record->status},
+            {"result", output},
+            {"duration_ms", record->duration_ms},
+            {"cold_start", record->cold_start},
+        };
+        return Response::json(200, body.dump());
     });
 
     const char* host_env = std::getenv("FAAS_HOST");

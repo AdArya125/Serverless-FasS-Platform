@@ -1,6 +1,6 @@
 CXX := g++
 CXXFLAGS := -std=c++17 -Wall -Wextra -O2 -pthread -I include -I ../common/include -MMD -MP
-LDFLAGS := -pthread
+LDFLAGS := -pthread -lsqlite3
 
 BUILD := build
 BIN := $(BUILD)/faas-control-plane

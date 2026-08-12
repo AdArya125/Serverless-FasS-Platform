@@ -1,7 +1,11 @@
 # API Contract
 
 The control plane exposes a plain HTTP/JSON API on port 8080 by default
-(override with the `FAAS_PORT` environment variable).
+(override with the `FAAS_PORT` environment variable). Every endpoint
+below behaves identically regardless of whether functions are actually
+running as Docker containers or Kubernetes pods
+(`FAAS_RUNTIME_BACKEND`, see `docs/architecture.md`) - the backend is a
+startup-time infrastructure choice, not part of the API contract.
 
 ## Status legend
 
@@ -19,8 +23,8 @@ The control plane exposes a plain HTTP/JSON API on port 8080 by default
 | POST   | `/functions/{name}/invoke`  | done    | Invoke a function                     |
 | GET    | `/functions/{name}/runtime` | done    | Inspect the current runtime, if any   |
 | GET    | `/runtimes`                 | done    | List all currently active runtimes    |
-| GET    | `/invocations/{id}`         | stub    | Fetch a past invocation record        |
-| GET    | `/metrics`                  | planned | Prometheus text-format metrics        |
+| GET    | `/invocations/{id}`         | done    | Fetch a past invocation record        |
+| GET    | `/metrics`                  | done    | Prometheus text-format metrics        |
 
 ## POST /functions
 
@@ -71,6 +75,12 @@ Response: `200 OK` with the function record, or `404 Not Found`.
 
 ## DELETE /functions/{name}
 
+Removes the function and, if a runtime is currently running for it,
+stops and removes that too - immediately, not waiting for the idle
+timeout. Without this, a deleted function's container/pod would linger
+until scale-to-zero eventually caught up with it (or indefinitely, if it
+happened to be busy at delete time).
+
 Response: `204 No Content`, or `404 Not Found`.
 
 ## POST /functions/{name}/invoke
@@ -88,10 +98,15 @@ created runtime rather than surfacing an error - the response still
 reports `"success"`, just with `cold_start: true`. A runtime that times
 out is torn down and not retried (see `docs/architecture.md` for why).
 
+Every invocation - success, user failure, timeout, or infrastructure
+failure - is persisted with a generated `invocation_id`, retrievable
+later via `GET /invocations/{id}`.
+
 Response on `200 OK` (the function ran, whether or not it succeeded):
 
 ```json
 {
+  "invocation_id": "42",
   "status": "success",
   "result": "Hello, Adi!",
   "duration_ms": 18,
@@ -120,6 +135,7 @@ the container never became healthy):
 
 ```json
 {
+  "invocation_id": "43",
   "status": "error",
   "error": "failed to start container: ...",
   "duration_ms": 4108,
@@ -183,9 +199,57 @@ platform.
 
 ## GET /invocations/{id}
 
-Planned response, once invocation history is implemented: the stored
-invocation record (function name, input, output, status, timing,
-cold/warm flag).
+Looks up a past invocation by the `invocation_id` returned from
+`POST /functions/{name}/invoke`. Backed by SQLite, so records survive a
+control-plane restart.
+
+Response on `200 OK`:
+
+```json
+{
+  "id": "42",
+  "function": "hello",
+  "status": "success",
+  "result": "Hello, Adi!",
+  "duration_ms": 18,
+  "cold_start": false
+}
+```
+
+Response on `404 Not Found` if no invocation with that id exists.
+
+## GET /metrics
+
+Prometheus text exposition format. See `docs/architecture.md` for what
+is tracked and why, and `observability/prometheus.yml` for a ready-made
+scrape config.
+
+```
+# HELP faas_active_runtimes Number of runtimes currently active.
+# TYPE faas_active_runtimes gauge
+faas_active_runtimes 1
+
+# HELP faas_invocations_total Total invocations by outcome and cold/warm.
+# TYPE faas_invocations_total counter
+faas_invocations_total{status="success",cold_start="true"} 1
+faas_invocations_total{status="success",cold_start="false"} 1
+
+# HELP faas_invocation_duration_ms Invocation duration in milliseconds.
+# TYPE faas_invocation_duration_ms histogram
+faas_invocation_duration_ms_bucket{cold_start="false",le="1"} 0
+...
+faas_invocation_duration_ms_bucket{cold_start="false",le="+Inf"} 1
+faas_invocation_duration_ms_sum{cold_start="false"} 2
+faas_invocation_duration_ms_count{cold_start="false"} 1
+
+# HELP faas_runtimes_created_total Total runtimes created (cold starts).
+# TYPE faas_runtimes_created_total counter
+faas_runtimes_created_total 1
+
+# HELP faas_runtimes_terminated_total Total runtimes stopped, by reason.
+# TYPE faas_runtimes_terminated_total counter
+faas_runtimes_terminated_total{reason="idle_timeout"} 1
+```
 
 ## Errors
 

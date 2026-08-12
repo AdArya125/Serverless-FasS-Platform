@@ -1,0 +1,8 @@
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    network_mode: host # simplest way to reach the control plane on localhost:8080
+    volumes:
+      - ../../observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml

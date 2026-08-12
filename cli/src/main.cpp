@@ -176,8 +176,29 @@ int cmd_invoke(const Args& args) {
     }
     std::cout << "duration: " << body.value("duration_ms", 0) << " ms\n";
     std::cout << "cold_start: " << (body.value("cold_start", false) ? "true" : "false") << "\n";
+    std::cout << "invocation_id: " << body.value("invocation_id", "") << "\n";
 
     return body.value("status", "") == "success" ? 0 : 1;
+}
+
+int cmd_invocation(const Args& args) {
+    if (args.positional.empty()) {
+        std::cerr << "usage: cloudfn invocation <id>\n";
+        return 1;
+    }
+    auto resp = make_client().get("/invocations/" + args.positional[0]);
+    if (!resp.ok || resp.status >= 300) {
+        print_api_error(resp);
+        return 1;
+    }
+    json record = json::parse(resp.body);
+    std::cout << "id:         " << record.value("id", "") << "\n";
+    std::cout << "function:   " << record.value("function", "") << "\n";
+    std::cout << "status:     " << record.value("status", "") << "\n";
+    std::cout << "result:     " << (record.contains("result") ? record["result"].dump() : "null") << "\n";
+    std::cout << "duration:   " << record.value("duration_ms", 0) << " ms\n";
+    std::cout << "cold_start: " << (record.value("cold_start", false) ? "true" : "false") << "\n";
+    return 0;
 }
 
 int cmd_logs(const Args& args) {
@@ -229,7 +250,7 @@ int cmd_delete(const Args& args) {
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::cerr << "usage: cloudfn <deploy|describe|invoke|logs|delete|runtimes> ...\n";
+        std::cerr << "usage: cloudfn <deploy|describe|invoke|invocation|logs|delete|runtimes> ...\n";
         return 1;
     }
 
@@ -239,6 +260,7 @@ int main(int argc, char** argv) {
     if (command == "deploy") return cmd_deploy(args);
     if (command == "describe") return cmd_describe(args);
     if (command == "invoke") return cmd_invoke(args);
+    if (command == "invocation") return cmd_invocation(args);
     if (command == "logs") return cmd_logs(args);
     if (command == "delete") return cmd_delete(args);
     if (command == "runtimes") return cmd_runtimes(args);

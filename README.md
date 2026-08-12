@@ -25,24 +25,35 @@ function's schedule. The warm path skips any proactive health check
 (one less round trip per call); if a warm runtime turns out to be dead,
 the platform retries once against a fresh one instead of surfacing an
 error. `GET /runtimes` (`cloudfn runtimes`) lists every active runtime
-platform-wide, for watching scale-to-zero happen in real time.
+platform-wide, for watching scale-to-zero happen in real time. Function
+metadata and every invocation's outcome (`GET /invocations/{id}`) are
+persisted in SQLite and survive a control-plane restart; only live
+runtime state does not (see `docs/architecture.md` for why). `GET
+/metrics` exposes invocation counts, cold/warm latency histograms, and
+runtime creation/termination counts in Prometheus format. Functions can
+run as Docker containers or as Kubernetes pods (`FAAS_RUNTIME_BACKEND`)
+behind the exact same lifecycle logic - the runtime manager talks to an
+abstract backend interface and cannot tell which one it has.
 
 - [x] Skeleton (repo, API contract, CLI, function model)
 - [x] Single runtime (create container, invoke, return result)
 - [x] Lifecycle (state machine, timeout, idle expiry)
 - [x] Warm reuse (no pre-flight health check, self-healing retry on a dead runtime)
 - [x] Scale-to-zero (per-function idle timeout, active-runtime listing)
-- [ ] Persistence (SQLite)
-- [ ] Observability (Prometheus)
-- [ ] Kubernetes/k3s
+- [x] Persistence (SQLite-backed functions and invocation history)
+- [x] Observability (Prometheus metrics endpoint)
+- [x] Kubernetes/k3s (pluggable runtime backend, tested against a real k3s cluster)
 - [ ] Evaluation (benchmarks)
 
 ## Requirements
 
 - `g++` with C++17 support, `make`
-- `libsqlite3-dev` (needed once persistence is implemented)
+- `libsqlite3-dev`
 - `nlohmann-json3-dev`
 - Docker (needed once the runtime manager creates containers)
+- `kubectl` pointed at a reachable cluster (only needed for the
+  Kubernetes backend - a local k3s node works well; see
+  `docs/architecture.md` for the image-import step it requires)
 
 On Debian/Ubuntu:
 
@@ -70,7 +81,9 @@ The control plane listens on `0.0.0.0:8080` by default; override with
 `FAAS_PORT`. The CLI reads the control plane address from `FAAS_API`
 (default `127.0.0.1:8080`). `FAAS_IDLE_TIMEOUT_MS` sets the default idle
 timeout (default 60000ms) for functions deployed without an explicit
-`--idle-timeout`.
+`--idle-timeout`. `FAAS_DB_PATH` sets where function/invocation data is
+stored (default `faas.db` in the working directory). `FAAS_RUNTIME_BACKEND`
+selects `docker` (default) or `kubernetes`/`k8s`.
 
 ## CLI usage
 
@@ -102,16 +115,29 @@ status: success
 result: "Hello, Adi!"
 duration: 930 ms
 cold_start: true
+invocation_id: 1
 
 $ cloudfn invoke hello --data '{"name":"Adi"}'
 status: success
 result: "Hello, Adi!"
 duration: 0 ms
 cold_start: false
+invocation_id: 2
+
+$ cloudfn invocation 1
+id:         1
+function:   hello
+status:     success
+result:     "Hello, Adi!"
+duration:   930 ms
+cold_start: true
 
 $ cloudfn delete hello
 deleted hello
 ```
+
+Function metadata and invocation history persist in `faas.db`
+(SQLite) - stop and restart the control plane and both are still there.
 
 The first invocation starts a container (cold start); as long as it
 stays healthy, later invocations reuse it directly (warm start). Use
@@ -127,14 +153,53 @@ hello	IDLE	port=32772	idle_ms=1832
 The `cloudfn` binary is built at `cli/build/cloudfn`; add it to your
 `PATH` or invoke it by full path.
 
+## Observability
+
+```bash
+$ curl -s http://127.0.0.1:8080/metrics
+```
+
+returns Prometheus text-format metrics: invocation counts by
+status/cold-warm, a duration histogram split by cold/warm (so
+`histogram_quantile` gives cold and warm p95/p99 separately), and
+runtime creation/termination counts by reason. See `docs/api.md` for the
+full field list.
+
+To actually scrape it with Prometheus (control plane running natively
+on the host, Prometheus in Docker via `network_mode: host`):
+
+```bash
+docker compose -f deploy/docker/docker-compose.yml up -d
+# Prometheus UI: http://localhost:9090
+```
+
+## Running on Kubernetes
+
+With a reachable cluster (a local single-node k3s install works - see
+`docs/architecture.md` for install notes), import the function images
+into its image store (k3s uses its own `containerd`, separate from
+Docker's) and start the control plane with the Kubernetes backend:
+
+```bash
+docker save hello:v1 | sudo k3s ctr images import -
+FAAS_RUNTIME_BACKEND=kubernetes ./scripts/run.sh
+```
+
+Everything else - `cloudfn deploy`/`invoke`/`describe`/`runtimes` - works
+exactly as before; the CLI and API do not know which backend is running
+underneath. `GET /functions/{name}/runtime` and `GET /runtimes` show the
+generated pod/service name where they'd otherwise show a container ID.
+
 ## Testing
 
 Unit tests live in `tests/` and use a small header-only test framework
 (`tests/test_framework.hpp`) rather than a third-party dependency. Run
 them with `make test` - they do not need Docker.
 
-Four integration tests exercise Docker directly and are not part of
-`make test`:
+Six integration tests exercise Docker (or, for one, Kubernetes) directly
+and are not part of `make test`; each uses its own throwaway
+`FAAS_DB_PATH` so they do not interfere with each other or with your own
+`faas.db`:
 
 - `make test-integration` builds the hello image, deploys it, invokes it
   twice, and checks that the first call is a cold start and the second
@@ -150,6 +215,14 @@ Four integration tests exercise Docker directly and are not part of
 - `make test-scale-to-zero` deploys the same image under two names with
   different idle timeouts and checks that each scales to zero on its own
   schedule, independently, as seen through `GET /runtimes`.
+- `make test-persistence` deploys a function, invokes it, restarts the
+  control plane against the same database, and checks that both the
+  function and the invocation record are still there.
+- `make test-kubernetes` runs the same cold/warm-start check as
+  `test-integration`, but against a real cluster via
+  `FAAS_RUNTIME_BACKEND=kubernetes` - needs `kubectl` pointed at a
+  reachable cluster with the hello image already imported (see
+  "Running on Kubernetes" above).
 
 ## Repository layout
 
@@ -161,8 +234,8 @@ serverless-faas-platform/
   functions/       sample function images (hello, sleep, ...)
   tests/           unit tests, shared test framework
   benchmarks/      experiment scripts
-  deploy/          docker-compose / kubernetes manifests
-  observability/   prometheus/grafana config
+  deploy/          docker-compose (prometheus) / kubernetes manifests
+  observability/   prometheus scrape config
   docs/            architecture and API documentation
   scripts/         build.sh, run.sh, test.sh
 ```

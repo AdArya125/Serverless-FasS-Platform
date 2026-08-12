@@ -10,6 +10,7 @@ cd "$(dirname "$0")/../.."
 
 PORT=18081
 SLEEP_IMAGE=sleep:v1
+DB_PATH=/tmp/faas-test-lifecycle.db
 
 echo "building project"
 make build >/dev/null
@@ -17,14 +18,16 @@ make build >/dev/null
 echo "building sleep function image"
 docker build -t "$SLEEP_IMAGE" functions/sleep >/dev/null
 
+rm -f "$DB_PATH"
 cleanup() {
     [[ -n "${SERVER_PID:-}" ]] && kill "$SERVER_PID" >/dev/null 2>&1 || true
     docker ps -q --filter "ancestor=$SLEEP_IMAGE" | xargs -r docker rm -f >/dev/null 2>&1 || true
+    rm -f "$DB_PATH"
 }
 trap cleanup EXIT
 
 echo "starting control plane (idle timeout: 2s)"
-FAAS_PORT=$PORT FAAS_IDLE_TIMEOUT_MS=2000 ./control-plane/build/faas-control-plane > /tmp/faas-lifecycle.log 2>&1 &
+FAAS_PORT=$PORT FAAS_IDLE_TIMEOUT_MS=2000 FAAS_DB_PATH=$DB_PATH ./control-plane/build/faas-control-plane > /tmp/faas-lifecycle.log 2>&1 &
 SERVER_PID=$!
 
 for _ in $(seq 1 50); do
