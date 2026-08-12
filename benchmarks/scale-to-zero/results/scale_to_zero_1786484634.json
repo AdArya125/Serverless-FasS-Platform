@@ -1,0 +1,14 @@
+[
+  {
+    "idle_timeout_ms": 2000,
+    "time_to_zero_s": 3.0590487139998004,
+    "recovery_ms": 1086,
+    "recreated": true
+  },
+  {
+    "idle_timeout_ms": 4000,
+    "time_to_zero_s": 4.931851977002225,
+    "recovery_ms": 1024,
+    "recreated": true
+  }
+]

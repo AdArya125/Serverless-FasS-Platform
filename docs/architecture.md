@@ -200,9 +200,11 @@ docker compose -f deploy/docker/docker-compose.yml up -d
 # Prometheus UI: http://localhost:9090
 ```
 
-Grafana is not wired up - the spec marks it optional, and a dashboard is
-more useful once there is real experimental data to point it at
-(`benchmarks/`, still to come) rather than as an empty shell now.
+Grafana is not wired up - the spec marks it optional, and with real
+experimental data now available (`benchmarks/README.md`), building a
+dashboard would be straightforward but was not judged worth the added
+moving part for a project this size; the raw numbers already answer the
+questions a dashboard would visualize.
 
 ## Container backends: Docker and Kubernetes
 
@@ -274,7 +276,7 @@ serverless-faas-platform/
   cli/             cloudfn command-line client
   functions/       sample function images (hello, sleep, ...)
   tests/           unit tests, shared test framework
-  benchmarks/      experiment scripts
+  benchmarks/      experiment scripts and results (see benchmarks/README.md)
   deploy/          docker-compose / kubernetes manifests
   observability/   prometheus/grafana config
   docs/            this file, api.md

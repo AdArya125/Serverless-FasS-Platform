@@ -1,0 +1,20 @@
+[
+  {
+    "idle_timeout_ms": 2000,
+    "time_to_zero_s": 2.9082004919982865,
+    "recovery_ms": 1333,
+    "recreated": true
+  },
+  {
+    "idle_timeout_ms": 5000,
+    "time_to_zero_s": 5.8654794309986755,
+    "recovery_ms": 1331,
+    "recreated": true
+  },
+  {
+    "idle_timeout_ms": 10000,
+    "time_to_zero_s": 10.584182671002054,
+    "recovery_ms": 1022,
+    "recreated": true
+  }
+]

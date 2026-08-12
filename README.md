@@ -33,7 +33,11 @@ runtime state does not (see `docs/architecture.md` for why). `GET
 runtime creation/termination counts in Prometheus format. Functions can
 run as Docker containers or as Kubernetes pods (`FAAS_RUNTIME_BACKEND`)
 behind the exact same lifecycle logic - the runtime manager talks to an
-abstract backend interface and cannot tell which one it has.
+abstract backend interface and cannot tell which one it has. Four
+experiments (`benchmarks/`) measure cold/warm latency, concurrency,
+scale-to-zero, and failure recovery against the real, running platform -
+see `benchmarks/README.md` for methodology and actual results, e.g. warm
+reuse measured roughly 1,000-2,000x faster than a cold start.
 
 - [x] Skeleton (repo, API contract, CLI, function model)
 - [x] Single runtime (create container, invoke, return result)
@@ -43,7 +47,7 @@ abstract backend interface and cannot tell which one it has.
 - [x] Persistence (SQLite-backed functions and invocation history)
 - [x] Observability (Prometheus metrics endpoint)
 - [x] Kubernetes/k3s (pluggable runtime backend, tested against a real k3s cluster)
-- [ ] Evaluation (benchmarks)
+- [x] Evaluation (cold/warm, concurrency, scale-to-zero, failure injection - see `benchmarks/README.md`)
 
 ## Requirements
 
@@ -190,6 +194,27 @@ exactly as before; the CLI and API do not know which backend is running
 underneath. `GET /functions/{name}/runtime` and `GET /runtimes` show the
 generated pod/service name where they'd otherwise show a container ID.
 
+## Evaluation
+
+```bash
+make functions
+./scripts/run.sh   # in another terminal
+
+python3 benchmarks/cold-start/run.py
+python3 benchmarks/concurrency/run.py
+python3 benchmarks/scale-to-zero/run.py
+./benchmarks/failures/run.sh   # manages its own control-plane process
+```
+
+Four experiments matching the project specification's required set:
+cold vs warm start latency (median/p95/p99), throughput and latency
+under increasing concurrency, the idle-timeout vs recovery-time
+trade-off behind scale-to-zero, and timed recovery from three real
+failure scenarios (a killed container, a forced timeout, a
+control-plane restart). Each writes raw JSON results into its own
+`results/` directory. See `benchmarks/README.md` for the full
+methodology and results tables from an actual run.
+
 ## Testing
 
 Unit tests live in `tests/` and use a small header-only test framework
@@ -233,7 +258,7 @@ serverless-faas-platform/
   cli/             cloudfn command-line client
   functions/       sample function images (hello, sleep, ...)
   tests/           unit tests, shared test framework
-  benchmarks/      experiment scripts
+  benchmarks/      experiment scripts and results (see benchmarks/README.md)
   deploy/          docker-compose (prometheus) / kubernetes manifests
   observability/   prometheus scrape config
   docs/            architecture and API documentation

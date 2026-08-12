@@ -1,0 +1,8 @@
+{
+  "dead_warm_runtime_recovery_ms": 1064,
+  "dead_warm_runtime_recovered_correctly": true,
+  "timeout_recovery_ms": 1069,
+  "timeout_recovered_correctly": true,
+  "control_plane_restart_to_healthy_ms": 14,
+  "state_persisted_correctly": true
+}
